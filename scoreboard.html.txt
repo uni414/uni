@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>雲端行動計分板</title>
+    
+    <!-- PWA 配置 -->
+    <meta name="theme-color" content="#4f46e5">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="manifest" href="data:application/json;base64,ewogICJuYW1lIjogIumbsuerr+ihjOWLleiioIOWIhuadvSIsCiAgInNob3J0X25hbWUiIjogIioIOWIhuadvSIsCiAgInN0YXJ0X3VybCI6ICIuIiwKICAiZGlzcGxheSI6ICJzdGFuZGFsb25lIiwKICAiYmFja2dyb3VuZF9jb2xvciI6ICIjZjhmYWZmIiwKICAidGhlbWVfY29sb3IiOiAiIzRmNDZlNSIKfQ==">
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/lucide/0.263.0/umd/lucide.min.js"></script>
+    
+    <!-- Firebase SDK (使用模組化版本) -->
+    <script type="importmap">
+    {
+        "imports": {
+            "firebase/app": "https://www.gstatic.com/firebasejs/11.1.0/firebase-app.js",
+            "firebase/auth": "https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js",
+            "firebase/firestore": "https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js"
+        }
+    }
+    </script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap');
+        body { font-family: 'Inter', 'Microsoft JhengHei', sans-serif; -webkit-tap-highlight-color: transparent; }
+        .score-card { transition: transform 0.1s active; }
+        .score-card:active { transform: scale(0.98); }
+    </style>
+</head>
+<body class="bg-slate-50 min-h-screen pb-10">
+
+    <div id="app" class="max-w-md mx-auto px-4 py-6">
+        <!-- 載入中狀態 -->
+        <div id="loader" class="flex flex-col items-center justify-center py-20 text-slate-400">
+            <div class="animate-spin mb-4 text-indigo-600"><i data-lucide="loader-2" class="w-8 h-8"></i></div>
+            <p>正在連接雲端資料庫...</p>
+        </div>
+
+        <div id="main-content" class="hidden">
+            <!-- 頂部標題 -->
+            <div class="flex justify-between items-center mb-6">
+                <div>
+                    <h1 class="text-2xl font-black text-slate-800 tracking-tight">雲端計分板</h1>
+                    <p id="syncStatus" class="text-[10px] text-emerald-500 font-bold flex items-center gap-1">
+                        <i data-lucide="cloud-check" class="w-3 h-3"></i> 雲端同步已開啟
+                    </p>
+                </div>
+                <button onclick="resetAll()" class="p-2 text-slate-300 hover:text-rose-500 transition-colors">
+                    <i data-lucide="rotate-ccw" class="w-5 h-5"></i>
+                </button>
+            </div>
+
+            <!-- 控制列 -->
+            <div class="bg-white p-4 rounded-3xl shadow-sm border border-slate-100 mb-6 flex items-center justify-between">
+                <button onclick="addPlayer()" class="bg-indigo-600 text-white px-4 py-2 rounded-2xl flex items-center gap-2 text-sm font-bold active:scale-95 transition-transform">
+                    <i data-lucide="plus" class="w-4 h-4"></i> 新增對象
+                </button>
+                <div class="flex items-center gap-2 bg-slate-50 px-3 py-1.5 rounded-xl">
+                    <span class="text-[10px] font-black text-slate-400">級距</span>
+                    <input type="number" id="stepValue" value="1" class="w-8 bg-transparent text-center font-black text-indigo-600 focus:outline-none">
+                </div>
+            </div>
+
+            <!-- 玩家清單 -->
+            <div id="playerList" class="space-y-4"></div>
+        </div>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from 'firebase/app';
+        import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+        import { getFirestore, collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, query } from 'firebase/firestore';
+
+        // --- 這裡請填入您的 Firebase 配置 ---
+        const firebaseConfig = {
+            apiKey: "", // 保持為空，環境會自動填入或請填入您自己的
+            authDomain: "",
+            projectId: "",
+            storageBucket: "",
+            messagingSenderId: "",
+            appId: ""
+        };
+
+        // 如果在特殊環境下，嘗試抓取環境變數
+        const actualConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : firebaseConfig;
+        const appIdStr = typeof __app_id !== 'undefined' ? __app_id : 'my-scoreboard-app';
+
+        const app = initializeApp(actualConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        let user = null;
+        let players = [];
+
+        // 初始化
+        async function init() {
+            await signInAnonymously(auth);
+            onAuthStateChanged(auth, (currUser) => {
+                user = currUser;
+                if (user) startListening();
+            });
+            lucide.createIcons();
+        }
+
+        // 監聽雲端數據
+        function startListening() {
+            const path = `artifacts/${appIdStr}/users/${user.uid}/players`;
+            const q = collection(db, path);
+            
+            onSnapshot(q, (snapshot) => {
+                players = snapshot.docs.map(d => ({ id: d.id, ...d.data() }))
+                    .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+                
+                render();
+                document.getElementById('loader').classList.add('hidden');
+                document.getElementById('main-content').classList.remove('hidden');
+            });
+        }
+
+        // 渲染畫面
+        window.render = () => {
+            const list = document.getElementById('playerList');
+            list.innerHTML = players.length === 0 ? '<p class="text-center py-10 text-slate-300">目前沒有計分項目</p>' : '';
+            
+            players.forEach(p => {
+                const div = document.createElement('div');
+                div.className = 'bg-white p-6 rounded-[2.5rem] shadow-md border border-slate-100 flex items-center justify-between score-card';
+                div.innerHTML = `
+                    <div class="flex-1">
+                        <input type="text" value="${p.name}" onchange="updateName('${p.id}', this.value)" class="text-[10px] font-black text-slate-400 bg-transparent outline-none uppercase tracking-widest mb-1">
+                        <div class="text-5xl font-black text-slate-800 tabular-nums">${p.score}</div>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <button onclick="changeScore('${p.id}', -1)" class="w-14 h-14 rounded-3xl bg-slate-50 flex items-center justify-center text-rose-500 active:bg-rose-100 transition-colors">
+                            <i data-lucide="minus" class="w-6 h-6"></i>
+                        </button>
+                        <button onclick="changeScore('${p.id}', 1)" class="w-14 h-14 rounded-3xl bg-indigo-600 flex items-center justify-center text-white active:bg-indigo-700 shadow-lg shadow-indigo-100">
+                            <i data-lucide="plus" class="w-6 h-6"></i>
+                        </button>
+                    </div>
+                `;
+                list.appendChild(div);
+            });
+            lucide.createIcons();
+        };
+
+        // 操作函式
+        window.changeScore = async (id, dir) => {
+            const step = parseInt(document.getElementById('stepValue').value) || 1;
+            const p = players.find(x => x.id === id);
+            const ref = doc(db, `artifacts/${appIdStr}/users/${user.uid}/players`, id);
+            await updateDoc(ref, { score: p.score + (dir * step) });
+        };
+
+        window.updateName = async (id, name) => {
+            const ref = doc(db, `artifacts/${appIdStr}/users/${user.uid}/players`, id);
+            await updateDoc(ref, { name });
+        };
+
+        window.addPlayer = async () => {
+            const id = Date.now().toString();
+            const ref = doc(db, `artifacts/${appIdStr}/users/${user.uid}/players`, id);
+            await setDoc(ref, { name: '新對象', score: 0, createdAt: Date.now() });
+        };
+
+        window.resetAll = async () => {
+            if (!confirm('確定要全部歸零？')) return;
+            for (const p of players) {
+                const ref = doc(db, `artifacts/${appIdStr}/users/${user.uid}/players`, p.id);
+                await updateDoc(ref, { score: 0 });
+            }
+        };
+
+        // 註冊 Service Worker (PWA)
+        if ('serviceWorker' in navigator) {
+            const sw = `self.addEventListener('fetch', e => e.respondWith(fetch(e.request)));`;
+            const blob = new Blob([sw], { type: 'text/javascript' });
+            navigator.serviceWorker.register(URL.createObjectURL(blob));
+        }
+
+        init();
+    </script>
+</body>
+</html>
+
